@@ -1,8 +1,17 @@
 {
   "bookingUrl": "https://docs.google.com/forms/YOUR_FORM_ID",
   "faqs": [
-    { "q": "How do I book an appointment?", "a": "Fill out the consultation form above and I'll get back to you within 48 hours." },
-    { "q": "Do you do walk-ins?", "a": "Occasionally — follow my Instagram for announcements." },
-    { "q": "What styles do you specialize in?", "a": "American Traditional." }
+    {
+      "q": "How do I book an appointment?",
+      "a": "Fill out the consultation form above and I'll get back to you within 48 hours."
+    },
+    {
+      "q": "Do you do walk-ins?",
+      "a": "Occasionally — follow my Instagram for announcements."
+    },
+    {
+      "q": "What styles do you specialize in?",
+      "a": "American Traditional."
+    }
   ]
 }
