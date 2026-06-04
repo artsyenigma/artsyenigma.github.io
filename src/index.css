@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600&family=EB+Garamond:ital,wght@0,400;1,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Lock the overscroll color to match wood */
+html {
+  background-color: #1a120a;
+  overscroll-behavior: none; /* prevents bounce showing white on mobile */
+}
+
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background-color: #1a120a;
+}
+
+.app {
+  font-family: 'EB Garamond', serif;
+  background-color: #1a120a;
+}
+
+.wood-bg {
+  background-color: #1a120a;
+  background-image:
+    repeating-linear-gradient(
+      92deg,
+      transparent,
+      transparent 2px,
+      rgba(61, 43, 26, 0.15) 2px,
+      rgba(61, 43, 26, 0.15) 3px
+    ),
+    repeating-linear-gradient(
+      88deg,
+      transparent,
+      transparent 8px,
+      rgba(45, 31, 15, 0.1) 8px,
+      rgba(45, 31, 15, 0.1) 9px
+    ),
+    radial-gradient(ellipse 80% 40% at 20% 60%, rgba(61, 43, 26, 0.3) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 30% at 75% 30%, rgba(45, 31, 15, 0.2) 0%, transparent 55%),
+    linear-gradient(170deg, #1a120a 0%, #231808 50%, #1a120a 100%);
+}
+
+.bg-radial-vignette {
+  background: radial-gradient(ellipse at center, transparent 40%, rgba(0,0,0,0.7) 100%);
+}
+
+.font-display {
+  font-family: 'Cinzel', serif;
+}
+
+.font-serif {
+  font-family: 'EB Garamond', serif;
+}
+
+* {
+  box-sizing: border-box;
+}
