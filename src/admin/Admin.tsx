@@ -21,14 +21,43 @@ const TABS: Tab[] = ["About", "Gallery", "FAQ"];
 
 // ── GITHUB HELPERS ───────────────────────────────────────
 async function ghGet(token: string, path: string) {
-  const res = await fetch(`https://api.github.com/repos/${REPO}/contents/${path}?ref=${BRANCH}`, {
-    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
-  });
+  const res = await fetch(
+    `https://api.github.com/repos/${REPO}/contents/${path}?ref=${BRANCH}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/vnd.github+json",
+      },
+    }
+  );
+
   const data = await res.json();
-  const binary = atob(data.content.replace(/\n/g, ""));
-  const bytes  = Uint8Array.from(binary, (c) => c.charCodeAt(0));
-  const text   = new TextDecoder().decode(bytes);
-  return { json: JSON.parse(text), sha: data.sha as string };
+
+  if (!data) {
+    throw new Error("No response from GitHub");
+  }
+
+  let text = "";
+
+  // ✅ BEST PATH: use download_url if content is missing
+  if (data.download_url) {
+    const fileRes = await fetch(data.download_url);
+    text = await fileRes.text();
+  } 
+  // fallback for small files
+  else if (data.content && data.encoding === "base64") {
+    const binary = atob(data.content.replace(/\n/g, ""));
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    text = new TextDecoder().decode(bytes);
+  } 
+  else {
+    throw new Error("GitHub returned no usable file content");
+  }
+
+  return {
+    json: JSON.parse(text),
+    sha: data.sha,
+  };
 }
 
 async function ghPut(token: string, path: string, sha: string, content: unknown, msg: string) {
