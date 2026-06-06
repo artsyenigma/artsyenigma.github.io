@@ -1,3 +1,5 @@
+import logo from "./logo.png";
+
 interface Props {
   onMenuOpen: () => void;
 }
@@ -11,7 +13,7 @@ export default function Logo({ onMenuOpen }: Props) {
     >
       {/* Replace src with your actual logo path */}
       <img
-        src="/logo.png"
+        src={logo}
         alt="Logo"
         className="w-full h-full object-contain drop-shadow-lg hover:scale-105 transition-transform duration-200"
         onError={(e) => {
