@@ -47,14 +47,14 @@ async function ghGet(token: string, path: string) {
     },
   );
 
-  if (res.status === 404) return { json: null, sha: null };
+  if (res.status === 404) return { json: null, sha: null, raw: "" };
 
   const data = await res.json();
   if (!data) throw new Error("No response from GitHub");
 
   let text = "";
   if (data.download_url) {
-    const fileRes = await fetch(data.download_url);
+    const fileRes = await fetch(`${data.download_url}&t=${Date.now()}`);
     text = await fileRes.text();
   } else if (data.content && data.encoding === "base64") {
     const binary = atob(data.content.replace(/\n/g, ""));
@@ -64,7 +64,7 @@ async function ghGet(token: string, path: string) {
     throw new Error("GitHub returned no usable file content");
   }
 
-  return { json: JSON.parse(text), sha: data.sha };
+  return { json: JSON.parse(text), sha: data.sha, raw: text };
 }
 
 async function ghPut(
@@ -86,14 +86,22 @@ async function ghPut(
   };
   if (sha) body.sha = sha;
 
-  await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`, {
-    method: "PUT",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
+  const res = await fetch(
+    `https://api.github.com/repos/${REPO}/contents/${path}`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
     },
-    body: JSON.stringify(body),
-  });
+  );
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`GitHub PUT failed: ${res.status} — ${err.message ?? ""}`);
+  }
 }
 
 // ── IMAGE HELPERS ─────────────────────────────────────────
@@ -110,6 +118,19 @@ function uid() {
   return Math.random().toString(36).slice(2, 9);
 }
 
+function normalizeImageUrl(url: string): string {
+  if (!url) return url;
+  const fileMatch = url.match(/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (fileMatch) {
+    return `https://drive.google.com/thumbnail?id=${fileMatch[1]}&sz=w1000`;
+  }
+  const ucMatch = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (ucMatch && url.includes("drive.google.com")) {
+    return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w1000`;
+  }
+  return url;
+}
+
 // ── COMPONENT ────────────────────────────────────────────
 export default function Admin() {
   const [token, setToken] = useState("");
@@ -122,10 +143,15 @@ export default function Admin() {
 
   const [about, setAbout] = useState<AboutData>({ photo: "", story: "" });
   const [aboutSha, setAboutSha] = useState<string | null>(null);
+  const [aboutRaw, setAboutRaw] = useState("");
+
   const [gallery, setGallery] = useState<GalleryData>({ pieces: [] });
   const [galSha, setGalSha] = useState<string | null>(null);
+  const [galRaw, setGalRaw] = useState("");
+
   const [faq, setFaq] = useState<FaqData>({ bookingUrl: "", faqs: [] });
   const [faqSha, setFaqSha] = useState<string | null>(null);
+  const [faqRaw, setFaqRaw] = useState("");
 
   const [galleryUrlInput, setGalleryUrlInput] = useState("");
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -141,10 +167,13 @@ export default function Admin() {
       ]);
       setAbout(a.json ?? { photo: "", story: "" });
       setAboutSha(a.sha ?? null);
+      setAboutRaw(a.raw);
       setGallery(g.json ?? { pieces: [] });
       setGalSha(g.sha ?? null);
+      setGalRaw(g.raw);
       setFaq(f.json ?? { bookingUrl: "", faqs: [] });
       setFaqSha(f.sha ?? null);
+      setFaqRaw(f.raw);
       setHasLoaded(true);
       setStatus({ type: "ok", msg: "Loaded" });
     } catch (e) {
@@ -156,60 +185,57 @@ export default function Admin() {
   const save = useCallback(async () => {
     setStatus({ type: "load", msg: "Saving..." });
     try {
-      // save one at a time so each sha is fresh when used
-      const freshA = await ghGet(token, FILES.about);
-      await ghPut(token, FILES.about, freshA.sha, about, commitMsg);
+      // compare current content to what was loaded — skip unchanged files
+      const aboutNew = JSON.stringify(about, null, 2);
+      const galNew = JSON.stringify(gallery, null, 2);
+      const faqNew = JSON.stringify(faq, null, 2);
 
-      const freshG = await ghGet(token, FILES.gallery);
-      await ghPut(token, FILES.gallery, freshG.sha, gallery, commitMsg);
+      const aboutChanged = aboutNew !== aboutRaw.trim();
+      const galChanged = galNew !== galRaw.trim();
+      const faqChanged = faqNew !== faqRaw.trim();
 
-      const freshF = await ghGet(token, FILES.faq);
-      await ghPut(token, FILES.faq, freshF.sha, faq, commitMsg);
+      if (!aboutChanged && !galChanged && !faqChanged) {
+        setStatus({ type: "ok", msg: "No changes to save" });
+        return;
+      }
 
-      // update local shas
-      const [a, g, f] = await Promise.all([
-        ghGet(token, FILES.about),
-        ghGet(token, FILES.gallery),
-        ghGet(token, FILES.faq),
-      ]);
-      setAboutSha(a.sha ?? null);
-      setGalSha(g.sha ?? null);
-      setFaqSha(f.sha ?? null);
+      // save only changed files, one at a time to avoid sha conflicts
+      if (aboutChanged) {
+        const fresh = await ghGet(token, FILES.about);
+        await ghPut(token, FILES.about, fresh.sha, about, commitMsg);
+        setAboutRaw(aboutNew);
+        setAboutSha((await ghGet(token, FILES.about)).sha);
+      }
+
+      if (galChanged) {
+        const fresh = await ghGet(token, FILES.gallery);
+        await ghPut(token, FILES.gallery, fresh.sha, gallery, commitMsg);
+        setGalRaw(galNew);
+        setGalSha((await ghGet(token, FILES.gallery)).sha);
+      }
+
+      if (faqChanged) {
+        const fresh = await ghGet(token, FILES.faq);
+        await ghPut(token, FILES.faq, fresh.sha, faq, commitMsg);
+        setFaqRaw(faqNew);
+        setFaqSha((await ghGet(token, FILES.faq)).sha);
+      }
+
       setStatus({ type: "ok", msg: "Saved ✓" });
     } catch (e) {
-      setStatus({ type: "err", msg: "Save failed — try again" });
+      setStatus({ type: "err", msg: `Save failed — ${(e as Error).message}` });
       console.error(e);
     }
-  }, [token, about, gallery, faq, commitMsg]);
+  }, [token, about, aboutSha, aboutRaw, gallery, galSha, galRaw, faq, faqSha, faqRaw, commitMsg]);
 
   // ── GALLERY helpers ────────────────────────────────────
-  function normalizeImageUrl(url: string): string {
-    if (!url) return url;
-    const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-    if (driveMatch) {
-      const fileId = driveMatch[1];
-      return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
-    }
-    // also handle if they paste the uc?export=view link directly
-    const ucMatch = url.match(/drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/);
-    if (ucMatch) {
-      return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w1000`;
-    }
-    return url;
-  }
-
   const addPieceByUrl = () => {
     const url = galleryUrlInput.trim();
     if (!url) return;
     setGallery((p) => ({
       pieces: [
         ...p.pieces,
-        {
-          id: uid(),
-          image: normalizeImageUrl(url),
-          title: "",
-          description: "",
-        },
+        { id: uid(), image: normalizeImageUrl(url), title: "", description: "" },
       ],
     }));
     setGalleryUrlInput("");
@@ -349,6 +375,7 @@ export default function Admin() {
                   <img
                     src={about.photo}
                     alt=""
+                    referrerPolicy="no-referrer"
                     className="mt-3 max-h-48 grayscale"
                   />
                 )}
@@ -386,7 +413,6 @@ export default function Admin() {
           ) : activeTab === "Gallery" ? (
             /* ── GALLERY ── */
             <div className="flex flex-col gap-4">
-              {/* Pieces list */}
               {gallery.pieces.map((p, i) => (
                 <div
                   key={p.id}
@@ -419,6 +445,7 @@ export default function Admin() {
                     <img
                       src={p.image}
                       alt=""
+                      referrerPolicy="no-referrer"
                       className="w-24 h-24 object-cover grayscale flex-shrink-0"
                     />
                     <div className="flex-1 flex flex-col gap-2">
@@ -444,7 +471,6 @@ export default function Admin() {
                 </div>
               ))}
 
-              {/* Add controls — at the bottom like FAQ's "+ Add Question" */}
               <div className="flex flex-col gap-2 pt-1">
                 <div className="flex gap-2">
                   <input
