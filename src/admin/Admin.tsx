@@ -54,7 +54,7 @@ async function ghGet(token: string, path: string) {
 
   let text = "";
   if (data.download_url) {
-    const fileRes = await fetch(`${data.download_url}&t=${Date.now()}`);
+    const fileRes = await fetch(data.download_url);
     text = await fileRes.text();
   } else if (data.content && data.encoding === "base64") {
     const binary = atob(data.content.replace(/\n/g, ""));
