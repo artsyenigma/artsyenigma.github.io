@@ -47,14 +47,12 @@ async function ghGet(token: string, path: string) {
     },
   );
 
-  const data = await res.json();
+  if (res.status === 404) return { json: null, sha: null };
 
-  if (!data) {
-    throw new Error("No response from GitHub");
-  }
+  const data = await res.json();
+  if (!data) throw new Error("No response from GitHub");
 
   let text = "";
-
   if (data.download_url) {
     const fileRes = await fetch(data.download_url);
     text = await fileRes.text();
@@ -66,16 +64,13 @@ async function ghGet(token: string, path: string) {
     throw new Error("GitHub returned no usable file content");
   }
 
-  return {
-    json: JSON.parse(text),
-    sha: data.sha,
-  };
+  return { json: JSON.parse(text), sha: data.sha };
 }
 
 async function ghPut(
   token: string,
   path: string,
-  sha: string,
+  sha: string | null,
   content: unknown,
   msg: string,
 ) {
@@ -83,18 +78,21 @@ async function ghPut(
   const bytes = new TextEncoder().encode(text);
   const binary = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
   const encoded = btoa(binary);
+
+  const body: Record<string, unknown> = {
+    message: msg,
+    content: encoded,
+    branch: BRANCH,
+  };
+  if (sha) body.sha = sha;
+
   await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      message: msg,
-      content: encoded,
-      sha,
-      branch: BRANCH,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -123,16 +121,15 @@ export default function Admin() {
   }>({ type: "idle", msg: "Load to begin" });
 
   const [about, setAbout] = useState<AboutData>({ photo: "", story: "" });
-  const [aboutSha, setAboutSha] = useState("");
+  const [aboutSha, setAboutSha] = useState<string | null>(null);
   const [gallery, setGallery] = useState<GalleryData>({ pieces: [] });
-  const [galSha, setGalSha] = useState("");
+  const [galSha, setGalSha] = useState<string | null>(null);
   const [faq, setFaq] = useState<FaqData>({ bookingUrl: "", faqs: [] });
-  const [faqSha, setFaqSha] = useState("");
+  const [faqSha, setFaqSha] = useState<string | null>(null);
 
-  // controlled input for the URL field
   const [galleryUrlInput, setGalleryUrlInput] = useState("");
-
-  const loaded = !!aboutSha;
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [hasLoaded, setHasLoaded] = useState(false);
 
   const load = useCallback(async () => {
     setStatus({ type: "load", msg: "Loading..." });
@@ -142,12 +139,13 @@ export default function Admin() {
         ghGet(token, FILES.gallery),
         ghGet(token, FILES.faq),
       ]);
-      setAbout(a.json);
-      setAboutSha(a.sha);
-      setGallery(g.json);
-      setGalSha(g.sha);
-      setFaq(f.json);
-      setFaqSha(f.sha);
+      setAbout(a.json ?? { photo: "", story: "" });
+      setAboutSha(a.sha ?? null);
+      setGallery(g.json ?? { pieces: [] });
+      setGalSha(g.sha ?? null);
+      setFaq(f.json ?? { bookingUrl: "", faqs: [] });
+      setFaqSha(f.sha ?? null);
+      setHasLoaded(true);
       setStatus({ type: "ok", msg: "Loaded" });
     } catch (e) {
       setStatus({ type: "err", msg: "Load failed — check token / repo name" });
@@ -158,35 +156,50 @@ export default function Admin() {
   const save = useCallback(async () => {
     setStatus({ type: "load", msg: "Saving..." });
     try {
-      await Promise.all([
-        ghPut(token, FILES.about, aboutSha, about, commitMsg),
-        ghPut(token, FILES.gallery, galSha, gallery, commitMsg),
-        ghPut(token, FILES.faq, faqSha, faq, commitMsg),
+      // fetch fresh shas right before saving to avoid stale conflicts
+      const [freshA, freshG, freshF] = await Promise.all([
+        ghGet(token, FILES.about),
+        ghGet(token, FILES.gallery),
+        ghGet(token, FILES.faq),
       ]);
+
+      await Promise.all([
+        ghPut(token, FILES.about, freshA.sha, about, commitMsg),
+        ghPut(token, FILES.gallery, freshG.sha, gallery, commitMsg),
+        ghPut(token, FILES.faq, freshF.sha, faq, commitMsg),
+      ]);
+
+      // refetch shas again after saving
       const [a, g, f] = await Promise.all([
         ghGet(token, FILES.about),
         ghGet(token, FILES.gallery),
         ghGet(token, FILES.faq),
       ]);
-      setAboutSha(a.sha);
-      setGalSha(g.sha);
-      setFaqSha(f.sha);
+      setAboutSha(a.sha ?? null);
+      setGalSha(g.sha ?? null);
+      setFaqSha(f.sha ?? null);
       setStatus({ type: "ok", msg: "Saved ✓" });
     } catch (e) {
-      setStatus({ type: "err", msg: "Save failed" });
+      setStatus({ type: "err", msg: "Save failed — try again" });
       console.error(e);
     }
-  }, [token, about, aboutSha, gallery, galSha, faq, faqSha, commitMsg]);
+  }, [token, about, gallery, faq, commitMsg]);
 
   // ── GALLERY helpers ────────────────────────────────────
   function normalizeImageUrl(url: string): string {
-    if (!url) return url;
-    const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-    if (driveMatch) {
-      return `https://drive.google.com/uc?export=view&id=${driveMatch[1]}`;
-    }
-    return url;
+  if (!url) return url;
+  const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
+  if (driveMatch) {
+    const fileId = driveMatch[1];
+    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
   }
+  // also handle if they paste the uc?export=view link directly
+  const ucMatch = url.match(/drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/);
+  if (ucMatch) {
+    return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w1000`;
+  }
+  return url;
+}
 
   const addPieceByUrl = () => {
     const url = galleryUrlInput.trim();
@@ -194,14 +207,19 @@ export default function Admin() {
     setGallery((p) => ({
       pieces: [
         ...p.pieces,
-        { id: uid(), image: normalizeImageUrl(url), title: "", description: "" },
+        {
+          id: uid(),
+          image: normalizeImageUrl(url),
+          title: "",
+          description: "",
+        },
       ],
     }));
     setGalleryUrlInput("");
   };
 
   const addPieceByFile = async (files: FileList | null) => {
-    if (!files) return;
+    if (!files || files.length === 0) return;
     const newPieces: Piece[] = await Promise.all(
       Array.from(files).map(async (f) => ({
         id: uid(),
@@ -211,6 +229,7 @@ export default function Admin() {
       })),
     );
     setGallery((p) => ({ pieces: [...p.pieces, ...newPieces] }));
+    setFileInputKey((k) => k + 1);
   };
 
   const updatePiece = (id: string, key: keyof Piece, val: string) =>
@@ -309,7 +328,7 @@ export default function Admin() {
             {activeTab}
           </div>
 
-          {!loaded ? (
+          {!hasLoaded ? (
             <p className="text-[#333] text-sm">Load file to begin editing.</p>
           ) : activeTab === "About" ? (
             /* ── ABOUT ── */
@@ -370,8 +389,66 @@ export default function Admin() {
           ) : activeTab === "Gallery" ? (
             /* ── GALLERY ── */
             <div className="flex flex-col gap-4">
-              {/* Add controls */}
-              <div className="flex flex-col gap-2">
+              {/* Pieces list */}
+              {gallery.pieces.map((p, i) => (
+                <div
+                  key={p.id}
+                  className="bg-[#121212] border border-[#1e1e1e] p-4 rounded-md"
+                >
+                  <div className="flex justify-between mb-3">
+                    <span className="text-[10px] text-[#555]">#{i + 1}</span>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => movePiece(i, -1)}
+                        className="bg-[#161616] border border-[#2a2a2a] text-[#888] px-2 py-0.5 text-xs"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        onClick={() => movePiece(i, 1)}
+                        className="bg-[#161616] border border-[#2a2a2a] text-[#888] px-2 py-0.5 text-xs"
+                      >
+                        ↓
+                      </button>
+                      <button
+                        onClick={() => removePiece(p.id)}
+                        className="bg-[#161616] border border-[#4a1e1e] text-[#e05555] px-2 py-0.5 text-xs"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex gap-4">
+                    <img
+                      src={p.image}
+                      alt=""
+                      className="w-24 h-24 object-cover grayscale flex-shrink-0"
+                    />
+                    <div className="flex-1 flex flex-col gap-2">
+                      <input
+                        placeholder="Title (optional)"
+                        value={p.title}
+                        onChange={(e) =>
+                          updatePiece(p.id, "title", e.target.value)
+                        }
+                        className="bg-[#161616] border border-[#222] text-white px-3 py-1.5 text-sm"
+                      />
+                      <textarea
+                        placeholder="Description (optional)"
+                        rows={2}
+                        value={p.description}
+                        onChange={(e) =>
+                          updatePiece(p.id, "description", e.target.value)
+                        }
+                        className="bg-[#161616] border border-[#222] text-white px-3 py-1.5 text-sm resize-none"
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {/* Add controls — at the bottom like FAQ's "+ Add Question" */}
+              <div className="flex flex-col gap-2 pt-1">
                 <div className="flex gap-2">
                   <input
                     className="flex-1 bg-[#161616] border border-[#222] text-white px-3 py-2 text-sm"
@@ -389,9 +466,10 @@ export default function Admin() {
                     + Add URL
                   </button>
                 </div>
-                <label className="cursor-pointer inline-block bg-[#161616] border border-[#2a2a2a] text-[#888] text-xs px-4 py-2 w-fit hover:text-white transition-colors">
+                <label className="cursor-pointer inline-block bg-[#e8e8e0] text-[#0d0d0d] text-xs font-bold px-4 py-2 w-fit">
                   + Upload from disk
                   <input
+                    key={fileInputKey}
                     type="file"
                     accept="image/*"
                     multiple
@@ -400,59 +478,6 @@ export default function Admin() {
                   />
                 </label>
               </div>
-
-              {/* Pieces list */}
-              {gallery.pieces.map((p, i) => (
-                <div
-                  key={p.id}
-                  className="bg-[#121212] border border-[#1e1e1e] p-4 rounded-md flex gap-4"
-                >
-                  <img
-                    src={p.image}
-                    alt=""
-                    className="w-24 h-24 object-cover grayscale flex-shrink-0"
-                  />
-                  <div className="flex-1 flex flex-col gap-2">
-                    <input
-                      placeholder="Title (optional)"
-                      value={p.title}
-                      onChange={(e) =>
-                        updatePiece(p.id, "title", e.target.value)
-                      }
-                      className="bg-[#161616] border border-[#222] text-white px-3 py-1.5 text-sm"
-                    />
-                    <textarea
-                      placeholder="Description (optional)"
-                      rows={2}
-                      value={p.description}
-                      onChange={(e) =>
-                        updatePiece(p.id, "description", e.target.value)
-                      }
-                      className="bg-[#161616] border border-[#222] text-white px-3 py-1.5 text-sm resize-none"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1 items-end">
-                    <button
-                      onClick={() => movePiece(i, -1)}
-                      className="bg-[#161616] border border-[#2a2a2a] text-[#888] px-2 py-1 text-xs"
-                    >
-                      ↑
-                    </button>
-                    <button
-                      onClick={() => movePiece(i, 1)}
-                      className="bg-[#161616] border border-[#2a2a2a] text-[#888] px-2 py-1 text-xs"
-                    >
-                      ↓
-                    </button>
-                    <button
-                      onClick={() => removePiece(p.id)}
-                      className="bg-[#161616] border border-[#4a1e1e] text-[#e05555] px-2 py-1 text-xs"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              ))}
             </div>
           ) : (
             /* ── FAQ ── */
@@ -539,9 +564,9 @@ export default function Admin() {
         />
         <button
           onClick={save}
-          disabled={!loaded}
+          disabled={!hasLoaded}
           className={`px-5 py-2 text-sm font-bold transition-colors ${
-            loaded
+            hasLoaded
               ? "bg-[#e8e8e0] text-[#0d0d0d] cursor-pointer hover:bg-white"
               : "bg-[#1e1e1e] text-[#444] cursor-not-allowed"
           }`}
