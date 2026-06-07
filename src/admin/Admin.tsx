@@ -156,20 +156,17 @@ export default function Admin() {
   const save = useCallback(async () => {
     setStatus({ type: "load", msg: "Saving..." });
     try {
-      // fetch fresh shas right before saving to avoid stale conflicts
-      const [freshA, freshG, freshF] = await Promise.all([
-        ghGet(token, FILES.about),
-        ghGet(token, FILES.gallery),
-        ghGet(token, FILES.faq),
-      ]);
+      // save one at a time so each sha is fresh when used
+      const freshA = await ghGet(token, FILES.about);
+      await ghPut(token, FILES.about, freshA.sha, about, commitMsg);
 
-      await Promise.all([
-        ghPut(token, FILES.about, freshA.sha, about, commitMsg),
-        ghPut(token, FILES.gallery, freshG.sha, gallery, commitMsg),
-        ghPut(token, FILES.faq, freshF.sha, faq, commitMsg),
-      ]);
+      const freshG = await ghGet(token, FILES.gallery);
+      await ghPut(token, FILES.gallery, freshG.sha, gallery, commitMsg);
 
-      // refetch shas again after saving
+      const freshF = await ghGet(token, FILES.faq);
+      await ghPut(token, FILES.faq, freshF.sha, faq, commitMsg);
+
+      // update local shas
       const [a, g, f] = await Promise.all([
         ghGet(token, FILES.about),
         ghGet(token, FILES.gallery),
@@ -187,19 +184,19 @@ export default function Admin() {
 
   // ── GALLERY helpers ────────────────────────────────────
   function normalizeImageUrl(url: string): string {
-  if (!url) return url;
-  const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
-  if (driveMatch) {
-    const fileId = driveMatch[1];
-    return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+    if (!url) return url;
+    const driveMatch = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
+    if (driveMatch) {
+      const fileId = driveMatch[1];
+      return `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+    }
+    // also handle if they paste the uc?export=view link directly
+    const ucMatch = url.match(/drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/);
+    if (ucMatch) {
+      return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w1000`;
+    }
+    return url;
   }
-  // also handle if they paste the uc?export=view link directly
-  const ucMatch = url.match(/drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/);
-  if (ucMatch) {
-    return `https://drive.google.com/thumbnail?id=${ucMatch[1]}&sz=w1000`;
-  }
-  return url;
-}
 
   const addPieceByUrl = () => {
     const url = galleryUrlInput.trim();
